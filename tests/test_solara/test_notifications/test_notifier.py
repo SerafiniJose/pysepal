@@ -54,6 +54,51 @@ def test_track_lifecycle(bus, notifier):
     assert t.completed_at is not None
 
 
+def test_set_progress_with_detail_publishes_both(bus, notifier):
+    with notifier.track("Downloading") as task:
+        task.set_progress(0.33, detail="rivers — tile 10/30")
+        t = bus.tasks.value[0]
+        assert t.progress == 0.33
+        assert t.progress_detail == "rivers — tile 10/30"
+
+
+def test_set_progress_detail_creates_no_milestone(bus, notifier):
+    """Tile-level updates must not flood the milestone log."""
+    with notifier.track("Downloading") as task:
+        task.set_progress(0.1, detail="rivers — tile 3/30")
+        task.set_progress(0.2, detail="rivers — tile 6/30")
+        assert bus.tasks.value[0].milestones == ()
+
+
+def test_set_progress_without_detail_clears_stale_detail(bus, notifier):
+    """A plain set_progress must not leave an outdated detail string behind."""
+    with notifier.track("Downloading") as task:
+        task.set_progress(0.33, detail="rivers — tile 10/30")
+        task.set_progress(0.5)
+        assert bus.tasks.value[0].progress_detail is None
+
+
+def test_set_progress_none_resets_to_indeterminate(bus, notifier):
+    """Per-item runs reset the ring between items by publishing None."""
+    with notifier.track("Downloading") as task:
+        task.set_progress(0.9, detail="rivers — tile 27/30")
+        task.set_progress(None)
+        t = bus.tasks.value[0]
+        assert t.progress is None
+        assert t.progress_detail is None
+
+
+def test_serialized_task_includes_progress_detail(bus, notifier):
+    from pysepal.solara.notifications.notification_ui import (
+        _serialize_tasks_from_list,
+    )
+
+    with notifier.track("Downloading") as task:
+        task.set_progress(0.33, detail="rivers — tile 10/30")
+        data = _serialize_tasks_from_list(bus.tasks.value)
+    assert data[0]["progressDetail"] == "rivers — tile 10/30"
+
+
 def test_track_explicit_fail(bus, notifier):
     with notifier.track("Processing") as task:
         task.fail("broke")

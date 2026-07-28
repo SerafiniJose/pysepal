@@ -41,11 +41,21 @@ class TaskTracker:
             status=TaskStatus.RUNNING,
         )
 
-    def set_progress(self, value: float) -> None:
-        """Update continuous progress (0.0-1.0). Does NOT create a milestone."""
+    def set_progress(self, value: Optional[float], detail: Optional[str] = None) -> None:
+        """Update continuous progress (0.0-1.0). Does NOT create a milestone.
+
+        ``value=None`` resets the task to indeterminate — per-item runs use it
+        between items so a finished item's 100% ring doesn't linger.
+
+        ``detail`` is a short display string for the current progress (e.g.
+        ``"rivers — tile 10/30"``) shown by the pill alongside the percentage.
+        It is display-only state: unlike :meth:`step` it never lands in the
+        milestone log, so high-frequency updates stay cheap. Omitting it
+        clears any previous detail so a stale string can't outlive its value.
+        """
         if self._finished:
             return
-        self._bus.update_task(self._task_id, progress=value)
+        self._bus.update_task(self._task_id, progress=value, progress_detail=detail)
 
     def update(self, title: str) -> None:
         """Update the task title."""
@@ -193,7 +203,7 @@ class _NoopTaskTracker:
     def step(self, message: str) -> None:
         pass
 
-    def set_progress(self, value: float) -> None:
+    def set_progress(self, value: Optional[float], detail: Optional[str] = None) -> None:
         pass
 
     def update(self, title: str) -> None:

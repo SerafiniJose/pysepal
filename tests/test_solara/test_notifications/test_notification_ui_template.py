@@ -72,6 +72,37 @@ def test_pill_and_logger_font_sizes_are_px_for_cross_runtime_parity():
         ), f"{selector} font-size must not be em (breaks cross-runtime parity)"
 
 
+def test_pill_ring_is_determinate_when_progress_known():
+    """The pill spinner binds to task progress instead of spinning forever.
+
+    Tasks that publish ``progress`` (layer downloads) get a determinate ring;
+    tasks that never do (training, evaluation) keep the indeterminate spinner
+    via the ``:indeterminate`` binding — the bare hardcoded attribute must go.
+    """
+    content = _TEMPLATE_PATH.read_text()
+    assert ":indeterminate=" in content, "spinner must bind indeterminate to progress"
+    assert re.search(
+        r"<v-progress-circular[^>]*:value=", content, re.DOTALL
+    ), "spinner must bind :value to task progress"
+    assert not re.search(
+        r"<v-progress-circular\s+indeterminate\b", content, re.DOTALL
+    ), "hardcoded indeterminate spinner still present"
+
+
+def test_pill_text_alternates_with_progress_detail():
+    """The pill alternates between run position (title) and layer progress.
+
+    ``progressDetail`` carries the per-layer tile string; a frame timer swaps
+    ``pillText`` between the title and ``{pct}% {detail}``. Tasks without a
+    detail never alternate.
+    """
+    content = _TEMPLATE_PATH.read_text()
+    assert "progressDetail" in content, "progressDetail prop not consumed"
+    assert re.search(
+        r"pillFrameB|frameB", content
+    ), "no alternation frame state in template"
+
+
 def test_theme_is_driven_by_prop_not_dom_scan():
     """Theme flows in as the reactive ``is_dark`` prop, not a DOM scan.
 
