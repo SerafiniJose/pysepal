@@ -86,6 +86,15 @@ Local apps still use:
 - pre-commit tooling
 - Translator/i18n structure
 
+User file expectations:
+
+- resolve the output root once in `component/parameter/directory.py` as
+  `Path.home() / "module_results" / "<module_name>"`; create it with
+  `mkdir(parents=True, exist_ok=True)`
+- every save/load/list path in the app goes through that single constant
+- never scaffold repo-relative output folders (`data/`, `results/`, `output/`)
+- an env-var override of the default root is acceptable for dev/tests
+
 ## Dependency Defaults
 
 `pyproject.toml` owns Python dependencies.
