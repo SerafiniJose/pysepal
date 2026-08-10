@@ -12,6 +12,7 @@ import solara
 from eeclient.exceptions import EEClientError
 from solara.lab import headers
 
+from pysepal.solara.runtime_context import in_solara_server_context
 from pysepal.solara.session_manager import SessionManager
 
 logger = logging.getLogger("sepalui.solara.decorators")
@@ -49,9 +50,11 @@ def with_sepal_sessions(
     def decorator(component_func: Callable[..., Any]) -> Callable[..., Any]:
         @wraps(component_func)
         def wrapper(*args, **kwargs):
-            # Check if headers are available first
-            current_headers = headers.value
-            if current_headers is None:
+            # Only solara-server ever populates solara.lab.headers (its app loop
+            # copies the HTTP request headers). Waiting is only meaningful there;
+            # under voila/Jupyter they can never arrive and the session is built
+            # from in-container credentials instead.
+            if in_solara_server_context() and headers.value is None:
                 if show_loading:
                     solara.Info(waiting_message)
                 return
