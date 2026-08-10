@@ -135,10 +135,13 @@ def test_session_creation_source_registers_locale_state():
     Building a real session needs SEPAL headers/GEE credentials, so assert on
     the source: the same guard style upstream uses for import-time contracts.
 
-    Scoped to ``create_session`` (module-wide, ``"locale_state"`` also matches
-    ``get_session_info``, so deleting the registration left this green) and
-    matched on the whole dict entry rather than the bare key.
+    Scoped to the two session builders (module-wide, ``"locale_state"`` also
+    matches ``get_session_info``, so deleting the registration left this green)
+    and matched on the whole dict entry rather than the bare key.
     """
-    source = inspect.getsource(sm.SessionManager.create_session)
-    assert "locale_state = LocaleState()" in source
-    assert '"locale_state": locale_state' in source
+    for builder in (
+        sm.SessionManager._build_header_session,
+        sm.SessionManager._build_local_session,
+    ):
+        source = inspect.getsource(builder)
+        assert '"locale_state": LocaleState()' in source

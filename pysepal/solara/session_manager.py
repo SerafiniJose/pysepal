@@ -5,6 +5,8 @@ handling initialization, cleanup, and session tracking across different
 Solara applications.
 """
 
+import atexit
+import getpass
 import logging
 import os
 from typing import Any, Callable, Dict, Optional
@@ -18,7 +20,10 @@ from pysepal.scripts.drive_interface import GDriveInterface
 from pysepal.scripts.gee_interface import GEEInterface
 from pysepal.scripts.sepal_client import SepalClient
 from pysepal.solara.locale import LocaleState
-from pysepal.solara.runtime_context import get_current_runtime_id
+from pysepal.solara.runtime_context import (
+    get_current_runtime_id,
+    in_solara_server_context,
+)
 from pysepal.solara.theme import ThemeState
 
 logger = logging.getLogger("sepalui.session_manager")
@@ -62,10 +67,19 @@ class SessionManager:
         return get_current_runtime_id()
 
     def create_session(self, module_name: str = "default") -> None:
-        """Create a new session with all the interfaces for the given kernel ID.
+        """Create a new session with all the interfaces for the current kernel ID.
+
+        Three sources, in precedence order:
+
+        1. ``SOLARA_TEST=true`` -- dev override: authenticate against SEPAL with
+           ``LOCAL_SEPAL_USER``/``LOCAL_SEPAL_PASSWORD`` regardless of runtime.
+        2. Solara-server -- the forwarded request headers (``solara.lab.headers``);
+           bail out and wait while they have not arrived yet.
+        3. Voila / plain Jupyter -- no HTTP layer ever reaches the kernel, so the
+           session is built from what SEPAL provisions inside the sandbox itself
+           (see ``_build_local_session``).
 
         Args:
-            kernel_id: The kernel ID to create session for. If None, uses current kernel.
             module_name: The module name for the SepalClient.
 
         Raises:
@@ -79,42 +93,78 @@ class SessionManager:
             logger.debug(f"Session already exists for kernel {kernel_id}, skipping creation")
             return
 
-        current_headers = headers.value
+        in_server = in_solara_server_context()
 
-        if current_headers is None:
-            logger.warning(f"Headers not available yet for kernel {kernel_id}")
-            return
+        if os.getenv("SOLARA_TEST", "false").lower() == "true":
+            logger.debug(f"Creating SOLARA_TEST session for kernel {kernel_id}")
+            session = self._build_header_session(get_sepal_headers_from_auth(), module_name)
+        elif in_server:
+            current_headers = headers.value
+            if current_headers is None:
+                logger.warning(f"Headers not available yet for kernel {kernel_id}")
+                return
+            logger.debug(f"Creating session for kernel {kernel_id}")
+            session = self._build_header_session(
+                SepalHeaders.model_validate(current_headers), module_name
+            )
+        else:
+            logger.debug(f"Creating local-credential session for kernel {kernel_id}")
+            session = self._build_local_session(module_name)
 
-        logger.debug(f"Creating session for kernel {kernel_id}")
-
-        sepal_headers = (
-            get_sepal_headers_from_auth()
-            if os.getenv("SOLARA_TEST", "false").lower() == "true"
-            else SepalHeaders.model_validate(current_headers)
+        self._sessions[kernel_id] = session
+        if not in_server:
+            # on_kernel_start (and therefore setup_sessions' cleanup) only runs
+            # under solara-server; close the interfaces at interpreter exit.
+            atexit.register(self.cleanup_session, kernel_id)
+        logger.debug(
+            f"Sessions created for kernel {kernel_id} and gee_interface "
+            f"{id(session['gee_interface'])}"
         )
 
-        username = sepal_headers.sepal_user.username
-
+    def _build_header_session(
+        self, sepal_headers: SepalHeaders, module_name: str
+    ) -> Dict[str, Any]:
+        """Build a session from SEPAL request headers (solara-server / SOLARA_TEST)."""
         sepal_session_id = sepal_headers.cookies["SEPAL-SESSIONID"]
         gee_session = EESession.from_sepal_headers(sepal_headers)
 
-        gee_interface = GEEInterface(gee_session)
-        sepal_client = SepalClient.create(session_id=sepal_session_id, module_name=module_name)
-        drive_interface = GDriveInterface(sepal_headers=sepal_headers)
-        theme_state = ThemeState()
-        locale_state = LocaleState()
+        return {
+            "username": sepal_headers.sepal_user.username,
+            "gee_interface": GEEInterface(gee_session),
+            "sepal_client": SepalClient.create(
+                session_id=sepal_session_id, module_name=module_name
+            ),
+            "drive_interface": GDriveInterface(sepal_headers=sepal_headers),
+            "theme_state": ThemeState(),
+            "locale_state": LocaleState(),
+        }
 
-        self._sessions[kernel_id] = {
-            "username": username,
+    def _build_local_session(self, module_name: str) -> Dict[str, Any]:
+        """Build a session from in-container credentials (voila / plain Jupyter).
+
+        GEE and Drive resolve through ``eeclient``'s default provider (the
+        SEPAL-provisioned ``~/.config/earthengine/credentials`` in a SEPAL
+        sandbox). SepalClient resolves through ``pysepal_api.detect_auth()``
+        (the sandbox api key at ``/var/run/sepal-api-key``); where no api-key
+        source exists -- e.g. a dev machine -- it degrades to ``None`` instead
+        of failing the page, matching what header-less runtimes had before.
+        """
+        gee_interface = GEEInterface(EESession.from_default())
+
+        try:
+            sepal_client = SepalClient.create(module_name=module_name)
+        except Exception as e:
+            logger.warning(f"SepalClient unavailable for local session: {e}")
+            sepal_client = None
+
+        return {
+            "username": getpass.getuser(),
             "gee_interface": gee_interface,
             "sepal_client": sepal_client,
-            "drive_interface": drive_interface,
-            "theme_state": theme_state,
-            "locale_state": locale_state,
+            "drive_interface": GDriveInterface(),
+            "theme_state": ThemeState(),
+            "locale_state": LocaleState(),
         }
-        logger.debug(
-            f"Sessions created for kernel {kernel_id} and gee_interface {id(gee_interface)}"
-        )
 
     def cleanup_session(self, kernel_id: str) -> None:
         """Clean up a session for the given kernel ID.
@@ -212,12 +262,14 @@ class SessionManager:
 
 
 def can_create_sessions() -> bool:
-    """Whether a SEPAL session can exist for the current runtime at all.
+    """Whether a *header-based* SEPAL session can exist for the current runtime.
 
-    ``create_session`` needs solara's request headers. Voila, plain Jupyter and
-    plain scripts never have them, so a missing session there is expected rather
-    than a forgotten ``@with_sepal_sessions`` -- callers should degrade to their
-    headerless fallback instead of raising.
+    Voila, plain Jupyter and plain scripts never see solara's request headers,
+    so an initialized-but-sessionless manager there is expected rather than a
+    forgotten ``@with_sepal_sessions`` -- the getters degrade to their
+    headerless fallback instead of raising. (A *decorated* page in those
+    runtimes gets a real local-credential session via ``create_session``, so
+    its getters never reach this check.)
     """
     return headers.value is not None
 

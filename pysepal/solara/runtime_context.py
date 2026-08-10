@@ -12,6 +12,22 @@ class UnsupportedSolaraRuntimeError(RuntimeError):
     """Raised when pysepal cannot resolve a supported app runtime."""
 
 
+def in_solara_server_context() -> bool:
+    """True when the current thread runs inside a solara-server virtual kernel.
+
+    Only solara-server ever populates ``solara.lab.headers`` (its websocket app
+    loop copies the HTTP request headers at page connect). Voila and plain
+    Jupyter execute app code in a real ipykernel with no request context, so
+    headers can never arrive there and session material must come from
+    in-container credentials instead. Thread-scoped by design: call it from the
+    render path (as ``with_sepal_sessions``/``create_session`` do), not from
+    worker threads.
+    """
+    import solara.server.kernel_context as kernel_context
+
+    return kernel_context.has_current_context()
+
+
 def get_current_runtime_id() -> str:
     """Return a stable id for the current app runtime.
 
