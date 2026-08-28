@@ -100,3 +100,62 @@ def test_unmount_still_releases_owned_resources():
             rc.close()
 
     _run(scenario)
+
+
+class _RecordingDrawControl:
+    """Fake dc that records clears, with the real data-wipe semantics."""
+
+    def __init__(self):
+        self.data = [{"type": "Feature"}]
+        self.clears = 0
+
+    def clear(self):
+        self.clears += 1
+        self.data = []
+
+    def to_json(self):
+        return {"features": self.data}
+
+
+def test_unmount_spares_draw_control_claimed_by_successor():
+    """A superseded picker's cleanup must leave the shared draw control alone.
+
+    On a load-triggered keyed remount, reacton mounts the replacement picker
+    BEFORE running the replaced picker's unmount cleanup. Both instances share
+    the map's one draw control, so the old teardown (dc.clear() +
+    remove_control) was wiping the state the new picker had just restored:
+    the reloaded DRAW AOI lost its editable geometry and the geoman toolbar.
+    Each instance stamps an ownership token on the control at mount; a cleanup
+    that finds someone else's stamp is superseded and must not touch it.
+    """
+    map_ = _FakeMap()
+    map_.dc = _RecordingDrawControl()
+    map_.controls.append(map_.dc)
+    value = solara.reactive(AoiResult(method="DRAW", name="my_drawing", gdf=_gdf()))
+    loading = solara.reactive(False)
+
+    async def scenario():
+        box, rc = solara.render(
+            _Host(value=value, show=True, map_=map_, loading=loading),
+            handle_error=False,
+        )
+        try:
+            await asyncio.sleep(0.3)
+            clears_before = map_.dc.clears
+            # The successor's mount effect has already claimed the control
+            # (mount-before-cleanup ordering on a keyed remount).
+            map_.dc._aoi_view_owner = object()
+
+            rc.render(_Host(value=value, show=False, map_=map_, loading=loading))
+            await asyncio.sleep(0.2)
+
+            assert map_.dc.clears == clears_before, (
+                "superseded cleanup cleared the successor's draw control"
+            )
+            assert map_.dc in map_.controls, (
+                "superseded cleanup removed the successor's draw control from the map"
+            )
+        finally:
+            rc.close()
+
+    _run(scenario)

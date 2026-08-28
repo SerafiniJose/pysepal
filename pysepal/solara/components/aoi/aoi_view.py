@@ -225,6 +225,21 @@ def AoiView(
     # Get DrawControl if map is provided
     aoi_dc = map_.dc if map_ else None
 
+    # Ownership stamp for the shared draw control. All AoiView instances use
+    # the map's single dc, and on a keyed remount reacton mounts the
+    # replacement instance BEFORE running the replaced instance's unmount
+    # cleanup — so the old teardown would wipe the state the new picker just
+    # seeded. Each instance claims the control at mount (the ref object
+    # itself is the per-instance token); a cleanup that finds someone else's
+    # claim knows it was superseded and leaves the control alone.
+    dc_claim = solara.use_ref(None)
+
+    def _claim_draw_control():
+        if aoi_dc is not None:
+            aoi_dc._aoi_view_owner = dc_claim
+
+    solara.use_effect(_claim_draw_control, [])
+
     selected_method = solara.use_reactive("")
     admin_code = solara.use_reactive(None)
     draw_name = solara.use_reactive("")
@@ -355,8 +370,15 @@ def AoiView(
             pass
 
     def _apply_restore():
+        # A superseded predecessor's cleanup leaves the shared draw control
+        # alone (see _cleanup), so releasing whatever the previous picker
+        # left — drawn geometry, the mounted control — is THIS instance's
+        # job. Every non-DRAW branch below must end with the dc cleared and
+        # unmounted, or the previous project's drawn AOI stays visible and
+        # editable after a switch.
         result = reactive_value.value  # the loaded AoiResult (set before mount)
         if result is None or not getattr(result, "method", None):
+            _sync_draw_control("")
             return
         method = result.method
         restored_method.current = method  # set BEFORE selected_method so the guard sees it
@@ -369,6 +391,8 @@ def AoiView(
             draw_name.set(result.name or "")
             _seed_draw_control(getattr(result, "gdf", None))
         # ASSET: AssetSelectComponent seeds from initial=result.asset.
+        if method != "DRAW":
+            _sync_draw_control(method)
 
     solara.use_effect(_apply_restore, [])
 
@@ -398,6 +422,17 @@ def AoiView(
                 if result is None:
                     raise ValueError("No AOI to restore")
                 method = result.method
+
+                if method == "DRAW":
+                    # Re-seed the editable DrawControl here, not only in
+                    # _apply_restore: reacton runs a replacement instance's
+                    # mount effects BEFORE the replaced instance's unmount
+                    # cleanup, so on a load-triggered keyed remount the old
+                    # picker's teardown (dc.clear() + remove_control) wipes
+                    # the seed the new picker just did. This task body runs
+                    # on the event loop strictly after that whole commit, so
+                    # a seed here sticks and the restored AOI stays editable.
+                    _seed_draw_control(getattr(result, "gdf", None))
 
             elif method in ["ADMIN0", "ADMIN1", "ADMIN2"]:
                 if not admin_code.value:
@@ -584,6 +619,18 @@ def AoiView(
             # Note: We don't cancel the task here because task.cancel() raises
             # _CancelledErrorInOurTask which propagates up. The task will be
             # garbage collected when the component unmounts.
+
+            # Superseded by a replacement picker? On a keyed remount reacton
+            # mounts the new instance (which claims the dc and seeds its
+            # state) before running this cleanup — clearing the shared
+            # control here would wipe the successor's freshly restored
+            # drawing, leaving a reloaded DRAW AOI uneditable. The successor
+            # owns the map now; release nothing.
+            if (
+                aoi_dc is not None
+                and getattr(aoi_dc, "_aoi_view_owner", None) is not dc_claim
+            ):
+                return
 
             # Release only what this picker owns (map layers, draw control,
             # loading flag). `value` belongs to the caller — use_reactive passes

@@ -138,7 +138,9 @@ class _FakeDrawControl:
         self.data = []
 
     def clear(self):
-        pass
+        # Real GeomanDrawControl.clear() empties the drawn features; a no-op
+        # here would hide teardown/succession races from these tests.
+        self.data = []
 
     def to_json(self):
         return {"features": self.data}
@@ -309,6 +311,116 @@ def test_aoi_view_restore_adds_ee_layer_off_loop(monkeypatch):
             assert map_.ee_threads and all(
                 t is not loop_thread for t in map_.ee_threads
             ), "add_ee_layer ran on the kernel event loop thread"
+        finally:
+            rc.close()
+
+    asyncio.run(_scenario())
+
+
+def test_restore_reseeds_draw_control_after_teardown_wipe(monkeypatch):
+    """The auto-select must re-seed the DrawControl, not only the mount effect.
+
+    On a load-triggered keyed remount, reacton runs the replacement picker's
+    mount effects BEFORE the replaced picker's unmount cleanup, so the seed
+    done in ``_apply_restore`` is immediately wiped by the old instance's
+    teardown (``dc.clear()`` + ``remove_control``): the restored DRAW AOI
+    rendered but was no longer editable and the geoman toolbar vanished.
+
+    The auto-select task body runs on the event loop strictly after that
+    whole commit, so a seed there survives. This reproduces the race
+    deterministically: wipe the control in the window between the render
+    commit (mount seed done, task scheduled) and the first loop turn (task
+    body runs).
+    """
+    _patch_admin(monkeypatch)
+
+    map_ = _FakeMap()
+    result = AoiResult(method="DRAW", name="my_drawing", gdf=_gdf(), gee=False)
+    value = solara.reactive(result)
+
+    async def _scenario():
+        box, rc = solara.render(AoiView(value=value, gee=False, map_=map_), handle_error=False)
+        try:
+            # The old instance's cleanup: runs after the new mount's seed,
+            # before the auto-select task body gets its first loop turn.
+            assert map_.dc.data, "precondition: mount seed ran"
+            map_.dc.data = []
+            if map_.dc in map_.controls:
+                map_.controls.remove(map_.dc)
+
+            await _settle(
+                box,
+                lambda b: _has_text(b, ms.aoi_sel.complete),
+                lambda b: bool(map_.dc.data),
+            )
+            assert _has_text(box, ms.aoi_sel.complete), "restored DRAW AOI was not auto-confirmed"
+            assert map_.dc.data, (
+                "auto-select did not re-seed the DrawControl — a restored DRAW "
+                "AOI whose mount seed was wiped by the old picker's teardown "
+                "is no longer editable"
+            )
+            assert map_.dc in map_.controls, "DrawControl was not put back on the map"
+        finally:
+            rc.close()
+
+    asyncio.run(_scenario())
+
+
+def test_non_draw_restore_clears_predecessors_drawn_geometry(monkeypatch):
+    """Switching to a non-DRAW AOI must drop the previous picker's drawing.
+
+    A superseded picker's cleanup skips the shared draw control entirely (see
+    test_aoi_view_unmount), so releasing whatever the predecessor left —
+    drawn geometry + the mounted control — is the successor's job. A restored
+    ADMIN/ASSET selection must therefore clear and unmount the dc at mount,
+    or the previous project's drawn AOI stays visible and editable.
+    """
+    _patch_admin(monkeypatch)
+
+    map_ = _FakeMap()
+    # Predecessor state at succession: drawn geometry + mounted control.
+    map_.dc.data = [{"type": "Feature"}]
+    map_.controls.append(map_.dc)
+
+    result = AoiResult(method="ADMIN1", name="Amambay", admin="2184", gee=False)
+    value = solara.reactive(result)
+
+    async def _scenario():
+        box, rc = solara.render(AoiView(value=value, gee=False, map_=map_), handle_error=False)
+        try:
+            await _settle(
+                box,
+                lambda b: not map_.dc.data,
+                lambda b: map_.dc not in map_.controls,
+            )
+            assert not map_.dc.data, "predecessor's drawn geometry survived an ADMIN restore"
+            assert map_.dc not in map_.controls, "draw control stayed mounted on an ADMIN restore"
+        finally:
+            rc.close()
+
+    asyncio.run(_scenario())
+
+
+def test_empty_mount_clears_predecessors_drawn_geometry(monkeypatch):
+    """A picker mounting with no AOI (new project) must also release the dc."""
+    _patch_admin(monkeypatch)
+
+    map_ = _FakeMap()
+    map_.dc.data = [{"type": "Feature"}]
+    map_.controls.append(map_.dc)
+
+    value = solara.reactive(None)
+
+    async def _scenario():
+        box, rc = solara.render(AoiView(value=value, gee=False, map_=map_), handle_error=False)
+        try:
+            await _settle(
+                box,
+                lambda b: not map_.dc.data,
+                lambda b: map_.dc not in map_.controls,
+            )
+            assert not map_.dc.data, "predecessor's drawn geometry survived an empty mount"
+            assert map_.dc not in map_.controls, "draw control stayed mounted on an empty mount"
         finally:
             rc.close()
 
