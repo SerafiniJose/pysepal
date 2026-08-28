@@ -26,9 +26,25 @@ class NotificationBus:
     """
 
     def __init__(self):
-        """Initialize reactive state containers and thread lock."""
-        self.toasts: solara.Reactive[list[Toast]] = solara.reactive([])
-        self.tasks: solara.Reactive[list[TrackedTask]] = solara.reactive([])
+        """Initialize reactive state containers and thread lock.
+
+        The reactives get explicit, uuid-qualified storage keys: solara's hot
+        reload clears the process-wide auto-key counter and re-imports app
+        modules, so a bus created at runtime before a reload would otherwise
+        keep a counter key (``builtins:list:N``) that a re-imported
+        module-level reactive can be re-assigned — making the host app read
+        this bus's TrackedTask/Toast lists as its own value. Explicit keys
+        take bus state out of the counter namespace entirely.
+        """
+        import uuid as _uuid
+
+        uid = _uuid.uuid4().hex
+        self.toasts: solara.Reactive[list[Toast]] = solara.Reactive(
+            [], key=f"pysepal:notifications:{uid}:toasts"
+        )
+        self.tasks: solara.Reactive[list[TrackedTask]] = solara.Reactive(
+            [], key=f"pysepal:notifications:{uid}:tasks"
+        )
         self._lock = threading.Lock()
 
     def add_toast(self, toast: Toast) -> None:

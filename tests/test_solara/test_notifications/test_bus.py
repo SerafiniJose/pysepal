@@ -194,3 +194,27 @@ def test_get_bus_returns_none_without_kernel_context(clean_bus_registry):
 )
 def test_get_current_bus_returns_none_for_unsupported_runtime(mock_kid, clean_bus_registry):
     assert get_current_bus() is None
+
+
+def test_bus_reactives_use_explicit_storage_keys():
+    """Bus state must never sit under solara's auto-generated counter keys.
+
+    solara's hot reload clears the process-wide reactive key counter
+    (``KernelStore._type_counter``) and re-imports app modules, whose
+    module-level reactives are then re-keyed from zero. A bus created at
+    runtime before the reload keeps its old counter key in live kernel
+    dicts — so a re-imported module reactive can be assigned the same key
+    string and silently read the bus's TrackedTask/Toast lists as its own
+    value (seen as ``'TrackedTask' object has no attribute 'get'`` in a
+    host app's job list). Explicit, uuid-qualified keys take bus state out
+    of the counter namespace entirely.
+    """
+    bus = NotificationBus()
+
+    for reactive in (bus.toasts, bus.tasks):
+        key = reactive._storage.storage_key
+        assert key.startswith("pysepal:notifications:"), key
+
+    other = NotificationBus()
+    assert bus.tasks._storage.storage_key != other.tasks._storage.storage_key
+    assert bus.toasts._storage.storage_key != bus.tasks._storage.storage_key
