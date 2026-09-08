@@ -106,9 +106,8 @@ When a new pysepal Solara app produces GEE-backed layers users may want to take 
 
 ## Output and Filesystem Rules
 
-- All user outputs go under `~/module_results/<module_name>/` — the SEPAL-wide
-  convention (`SepalClient.results_path` resolves it). Resolve the data dir as
-  env-override (`<APP>_DATA_DIR`) else `~/module_results/<module_name>`.
+- User outputs live under `~/module_results/<module_name>/` — see the
+  local/Voila block in User File Rules above for the full convention.
 - **The process CWD is read-only on SEPAL for the app's whole life**: modules
   install on a read-only shared mount and the launcher `cd`s into it. Nothing
   may resolve paths relative to the CWD — no relative output defaults, no
