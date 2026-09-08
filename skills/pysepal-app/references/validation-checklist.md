@@ -12,9 +12,13 @@ Run this checklist before presenting the finished scaffold.
 - GEE flows inside Solara components avoid blocking sync calls.
 - GEE/container user-file operations use `SepalClient`, not `Path`, `os`,
   `shutil`, `glob`, `open()`, or container-local filesystem writes.
-- `pyproject.toml` is the source of truth for Python dependencies.
+- `sepal_environment.yml` is the deploy authority; `pyproject.toml` mirrors it.
 - `requirements.txt` was not generated.
-- `sepal_environment.yml` installs the project with `-e .`.
+- `sepal_environment.yml` does NOT contain `-e .`, and every pip dep is pinned.
+- No path resolves relative to the CWD (read-only on SEPAL); user outputs go
+  under `~/module_results/<module_name>/`.
+- If the app runs under voila: `ui.ipynb` kernelspec is `venv-<repo-name>`
+  and the `references/sepal-deployment.md` checklist was walked.
 - `component/message/` exists.
 - Existing repo edits, if any, do not silently replace user-owned architecture.
 

@@ -1,6 +1,6 @@
 ---
 name: pysepal-app
-description: Scaffold or update pysepal Solara and Voila apps using current pysepal architecture. Use when creating a new pysepal app, restructuring an existing app to follow pysepal patterns, mapping notebook logic into a pysepal app, choosing between local/Voila and GEE/container app layouts, wiring session-backed GEE flows, integrating MapApp, or adding user-facing notifications with NotificationProvider and use_notifications.
+description: Scaffold or update pysepal Solara and Voila apps using current pysepal architecture. Use when creating a new pysepal app, restructuring an existing app to follow pysepal patterns, mapping notebook logic into a pysepal app, choosing between local/Voila and GEE/container app layouts, wiring session-backed GEE flows, integrating MapApp, adding user-facing notifications with NotificationProvider and use_notifications, deploying a pysepal app to SEPAL, writing or editing sepal_environment.yml or a voila ui.ipynb entrypoint, or debugging deploy-only failures (missing kernel, read-only filesystem, tiles not loading through the SEPAL proxy).
 ---
 
 # Pysepal App
@@ -26,6 +26,8 @@ For repo-specific defaults and scaffold workflow:
 - `references/scaffold-workflow.md`
 - `references/existing-repo-rules.md`
 - `references/validation-checklist.md`
+- `references/sepal-deployment.md` — REQUIRED before deploying to SEPAL or
+  running under voila; failure classes there are invisible in local dev
 
 ## Core Rules
 
@@ -85,6 +87,43 @@ When a new pysepal Solara app produces GEE-backed layers users may want to take 
 - do not build a second custom export UX unless the dialog genuinely cannot cover the requirements; if customization is needed, prefer `use_export_dialog(...)` + `ExportDialog(controller=...)` over re-implementing submission logic
 - use canonical file-format values (`"GEO_TIFF"`, `"GEO_JSON"`, `"SHP"`, `"CSV"`, `"KML"`, `"KMZ"`) at the pysepal to ee-client boundary
 - require `ee-client >= 2.5.2` in the app's pyproject for the table-to-asset fix
+
+## Output and Filesystem Rules
+
+- All user outputs go under `~/module_results/<module_name>/` — the SEPAL-wide
+  convention (`SepalClient.results_path` resolves it). Resolve the data dir as
+  env-override (`<APP>_DATA_DIR`) else `~/module_results/<module_name>`.
+- **The process CWD is read-only on SEPAL for the app's whole life**: modules
+  install on a read-only shared mount and the launcher `cd`s into it. Nothing
+  may resolve paths relative to the CWD — no relative output defaults, no
+  `Path.cwd()`/`os.getcwd()` roots. This fails only on SEPAL, never in dev.
+- Pass **absolute** paths into third-party geo libraries; several default to
+  relative outputs and some write unnamed sibling scratch files next to them.
+- GDAL allocates scratch files via `CPLGenerateTempFilename`, which falls back
+  to `"."` when `CPL_TMPDIR`/`TMPDIR` are unset (e.g. `ComputeProximity` with a
+  non-Float32 destination) → `Read-only file system` on SEPAL. Configure a
+  writable GDAL tmpdir **at import time in Python** (env var + 
+  `gdal.SetConfigOption`), not in a launcher script — SEPAL launches
+  `voila ui.ipynb` directly, so shell exports in `run_*.sh` never run there.
+
+## Deployment Rules (SEPAL / voila)
+
+Read `references/sepal-deployment.md` before any deploy work. Non-negotiables:
+
+- `sepal_environment.yml` is what SEPAL actually installs — it is the deploy
+  authority. Keep `pyproject.toml` mirrored to it, but the conda YAML wins on
+  drift. Do NOT install the app with `-e .` from the YAML: pyproject pins can
+  poison the conda GDAL stack; the app runs in place under voila.
+- Pin every PyPI dep in the YAML. An unpinned dep that renames or majors is a
+  deploy-only breakage invisible in dev (local envs mask it via stale installs).
+- The voila entry `ui.ipynb` stays thin (sys.path shim + import + display) and
+  its `kernelspec.name` must be SEPAL's `venv-<repo-name>` — never "fix" it to
+  `python3`. Locally, register that kernel name by hand; voila falls back to
+  *any other registered kernel* with only a WARNING when the name is missing,
+  producing baffling import errors from the wrong env.
+- Restart voila after editing the notebook or app code — a stale instance
+  keeps serving the old notebook, and Solara hot reload corrupts reactive
+  state (see the pysepal skill).
 
 ## App Shell Guidance
 

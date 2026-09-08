@@ -58,6 +58,14 @@ async def gee_job(request):
 - `await gee_interface.*_async(...)` for all Earth Engine calls
 - `asyncio.to_thread(...)` only for non-GEE blocking work (file I/O, CPU)
 - Pass the same `gee_interface` instance down to child components and `SepalMap`
+- **Never mix the two transports.** The sync API (`get_info`,
+  `map_.add_ee_layer`) runs on GEEInterface's private loop; the `*_async`
+  API runs on the caller's loop. eeclient's locks and its cached httpx
+  connection bind to whichever loop touches them first, so a mixed app
+  crashes with "bound to a different event loop" in whichever path runs
+  second. Apps that put EE layers on a `SepalMap` (whose `add_ee_layer` is
+  sync → private loop) should use the blocking API via `asyncio.to_thread`
+  for ALL eeclient calls — see the error-pattern entry below.
 
 ## Solara Component Rules
 
@@ -81,6 +89,67 @@ For simple inputs, buttons, state display — use `@solara.component` with
 
 Read `docs/guides/ipyvuetify-widgets.md` for the full
 guide with examples of both approaches.
+
+### Import reacton.ipyvuetify, never plain ipyvuetify
+
+Inside `@solara.component` bodies, `rv` must be `import reacton.ipyvuetify as rv`.
+A plain `import ipyvuetify as rv` makes every `rv.TextField(...)` construct a
+live widget instead of a reacton element — the field silently never renders,
+while sibling Solara/pysepal components still do, so the form looks *half*
+built (reads like a layout bug, not an import bug). Guard with a render test
+(`reacton.render(...)` then walk the tree for the widget class), not a
+source-substring test.
+
+### Clicks: solara.Button / use_event, never rv.Btn(on_click=)
+
+`rv.Btn(on_click=...)` **silently drops clicks** — reacton maps `on_X` kwargs
+to `widget.observe(handler, "X")` and `v.Btn` has no `click` trait. Vue events
+need `ipyvue.use_event`; `solara.Button` wires this internally. For other
+elements use `rv.use_event(el, "click", handler)`.
+
+`rv.use_event` is a **hook**: call it unconditionally (constant count per
+render, loops only over fixed-length iterables) and gate the action inside the
+handler. `if not locked: rv.use_event(...)` trips `validate_hooks` and can
+misbind handlers as the condition flips. For anchored dropdowns use
+`solara.lab.Menu(activator=el)` — the click is bound in Vue, so the dead-click
+trap cannot bite; note `Menu(style=...)` styles the dropdown *content*, not the
+`v-menu` root (stretch the activator via a wrapper div + CSS on `.wrap > .v-menu`).
+
+### Pass reactives to children, not .value
+
+Reacton **skips re-rendering a child component whose props compare `==` to the
+previous render**. A mutable pydantic model that was mutated in place then
+shallow-`model_copy()`ed compares equal → the child freezes at its first
+snapshot while the parent body (subscribed to the reactive) keeps updating.
+Rule: children that must react to state changes receive the `solara.Reactive`
+itself and read `.value` inside.
+
+### Keyed remounts run the new mount BEFORE the old cleanup
+
+On a `.key(...)` swap, reacton mounts the new instance and runs its mount
+effects before the replaced instance's unmount cleanup — the opposite of
+React. Cleanup that releases a *shared* resource (e.g. the map's single draw
+control) therefore wipes the successor's setup. Pattern: stamp an ownership
+token on the shared object at mount; cleanup checks the token and skips
+teardown when superseded; the successor must sync the shared resource to its
+own state at mount.
+
+### Never block inside a widget event handler
+
+Widget callbacks (`on_click`, dialog submit, ...) run inside
+`process_kernel_messages` under `context.lock` on the session's websocket
+receive loop — while a handler runs, the session reads no further messages:
+every button is dead, no re-render or notification lands. Having kernel
+context ≠ safe to block. Anything slower than ~100 ms goes through
+`solara.lab.use_task` + `asyncio.to_thread` (or a context-carrying thread
+spawner).
+
+A worker *thread* is still useless against a C extension that holds the GIL
+for the whole call (e.g. a native MCMC sampler): run those in a **spawn**
+subprocess (never fork a multithreaded Solara/GDAL server). Probe with a
+ticker thread during the call — `nm -D <ext>.so | grep PyEval_SaveThread`
+alone only proves *some* function releases the GIL. GDAL's `ComputeProximity`
+does release it; a thread suffices there.
 
 ### rv. vs v. inside context managers
 
@@ -284,6 +353,17 @@ with track_task("Exporting", total_steps=2) as task:
   by `MapApp.vue`. No DOM polling.
 - The `@catch_errors` decorator is NOT modified. It continues to work
   with legacy Alert widgets only. The notification system is independent.
+- A FAILED task **leaves the pill** (`displayTask` shows running tasks only)
+  and survives only in the task history log — pair `task.fail(msg)` with an
+  error toast so failures stay visible. If a wrapper raises its own error
+  toast on exit, call `task.fail(...)` *first* so the built-in bare-`str(exc)`
+  toast is suppressed.
+- `bus.add_toast` REPLACES all existing ERROR toasts with the newest one (no
+  stacking) — tests can never count error publications via `bus.toasts`; spy
+  on the notifier instead.
+- Because `use_notifications()` silently returns a `NoopNotifier` without a
+  mounted provider, toast assertions on an un-mounted render pass vacuously —
+  inject a recording notifier in tests.
 
 **Reference template:**
 `pysepal/templates/solara/solara_map_app/app.py`
@@ -380,6 +460,32 @@ All buttons that trigger async work must use `TaskButtonComponent`.
 Read `docs/guides/solara-gee-patterns.md` § "Async
 Button Convention" for the canonical pattern, rules, and cancel semantics.
 
+### use_task gotchas (verified Solara 1.57.4)
+
+- **`Task.error` is a `bool`** — the exception lives on `Task.exception`.
+  `str(task.error)` shows the user the literal string `"True"`.
+- **A render-time `disabled=` prop cannot stop a double-click** — it reaches
+  the browser one round-trip after the task starts, and the second call
+  *cancels the in-flight task*; cancelling a coroutine awaiting
+  `asyncio.to_thread(...)` does NOT stop the worker thread, and cleanup after
+  the `await` never runs. Guard handler-side instead:
+  `if task.pending: return` before calling the task (`pending` is set
+  synchronously). `disabled=` is for showing state, not enforcing it.
+- After any long `await`, reconcile against reality (disk contents, current
+  reactive values) — never against state read before the await.
+
+### Hot reload aliases runtime-created reactives
+
+Solara's dev hot reload clears the reactive auto-key counter and re-imports
+app modules; a re-imported module-level `solara.reactive(...)` can then be
+assigned the same positional key a pre-reload *runtime-created* reactive
+already used in a live kernel — the two silently share storage (symptom:
+impossible type errors in unrelated state). pysepal's NotificationBus
+reactives carry explicit uuid keys for this reason; give any other
+runtime-created reactive in a long-lived object an explicit
+`solara.Reactive(default, key=...)`. Operational rule: restart the dev server
+after code edits rather than trusting hot reload.
+
 ### AOI Method Restrictions
 
 GEE/container apps must exclude SHAPE and POINTS methods — they read local
@@ -440,6 +546,17 @@ start/cancel/start cycle hits a second loop → RuntimeError.
   await asyncio.to_thread(map_.add_ee_layer, fc, vis, "aoi", autocenter=True)
   ```
 
+**The invariant is ONE loop for all eeclient traffic.** `GEEInterface` runs
+session ops on its own private `_async_loop`; eeclient's asyncio primitives
+AND its single cached `httpx.AsyncClient` connection bind to the first loop
+that touches them. Mixing (`await interface.get_info_async(...)` on the
+kernel loop in one place, `to_thread(map_.add_ee_layer, ...)` → private loop
+elsewhere) crashes in whichever direction touches second — the error can
+appear far from the call that caused the binding. The robust app-side
+pattern, verified in production: use the **blocking** API
+(`interface.get_info`, `map_.add_ee_layer`) offloaded with
+`asyncio.to_thread`, everywhere, so all traffic stays on the private loop.
+
 ### Excessive "Closing GEEInterface..." log messages
 
 **Cause:** A helper like `process_admin()` is called without `gee_interface=`,
@@ -472,6 +589,43 @@ Reference: `docs/guides/ipyvuetify-widgets.md`
 
 **Fix:** Use `rv.Widget(...)` throughout, avoid mixing `solara.Column` with
 `rv.` containers.
+
+### Muted text renders black in dark dialogs — but only under voila
+
+**Cause:** Vuetify's `text--secondary` / `text--primary` / `text--disabled`
+carry no colour of their own; they resolve through an ancestor
+`.theme--dark.v-application` selector. Vuetify teleports `v-dialog` content
+into a global overlay container, and under voila jupyter-vuetify's
+`createDivs()` hardcodes `theme--light` on it. Invisible under solara-server,
+so it never shows in dev.
+
+**Fix:** don't use `text--*` helper classes inside dialog content; use an
+`opacity`-based muted style (e.g. `opacity: 0.7`), which inherits the card's
+correctly-themed colour.
+
+### pyogrio: "Found GDAL data directory ... does not appear to correctly contain GDAL data files"
+
+**Cause:** env-var poisoning chain — something set `GDAL_DATA` to a wheel's
+private `rasterio/gdal_data` path (localtileserver's `set_rasterio_env`
+copies rasterio's config into process-wide `os.environ` when a tile server
+starts), then conda pyogrio's lazy init reads it and fails. pysepal's
+`sepal_map` now prunes only *foreign* (non-`sys.prefix`) `GDAL_DATA`/`PROJ_LIB`
+values for this reason.
+
+**Fix/diagnose:** check `os.environ["GDAL_DATA"]` in the live kernel; a
+`rasterio/gdal_data` path means this chain. Restart voila/solara to clear
+poisoned kernels. Diff `/proc/PID/environ` (execve-time) against `os.environ`
+(runtime) to detect in-process env tampering.
+
+### localtileserver colormap: `AttributeError: 'dict' object has no attribute 'startswith'`
+
+**Cause:** `get_leaflet_tile_layer(colormap=...)` rejects dict colormaps.
+Pass a **matplotlib `Colormap` object** (sampled server-side, keeps URLs
+short), a list of colours, or a registered name. Note `SepalMap.add_raster`
+converts colormaps without passing `vmin/vmax/nodata`, so it auto-stretches
+per raster and cannot pin a fixed value→colour range — call
+`get_leaflet_tile_layer` directly with `Colormap` + explicit
+`vmin/vmax/nodata` when you need one.
 
 ### `Collection.loadTable: Expected asset to be a Collection, found 'Image'`
 
@@ -548,6 +702,14 @@ When invoked with `/pysepal audit`, check the current project for:
 - [ ] Inline `solara.Error()` / `solara.Success()` / `Alert()` for user feedback (use `use_notifications()` + `NotificationProvider`)
 - [ ] Reading `bus.toasts.value` or `bus.tasks.value` in a Solara render body (use `Reactive.subscribe()` in `use_effect` to avoid triggering parent re-renders)
 - [ ] Manual `ThemeToggle()` + `theme.observe(...)` wiring, or `theme_toggle=` on `SepalMap` / `MapApp` (use `get_current_theme_state()` + `theme_state=`)
+- [ ] `import ipyvuetify as rv` (instead of `reacton.ipyvuetify`) in any `@solara.component` module — silently renders nothing
+- [ ] `rv.Btn(on_click=...)` — clicks are silently dropped; use `solara.Button` or `rv.use_event`
+- [ ] `rv.use_event` inside an `if` or variable-length loop — hooks must be unconditional
+- [ ] A mutable model's `.value` passed as a child-component prop (reacton `==`-equality bailout freezes the child; pass the reactive)
+- [ ] Blocking work (>~100 ms) directly in a widget event handler — freezes the session's websocket loop
+- [ ] `str(task.error)` shown to the user, or double-click guarded only by a render-time `disabled=` prop
+- [ ] Mixed eeclient transports: `await *_async(...)` in some paths, sync-via-`to_thread` in others (one loop only)
+- [ ] Vuetify `text--secondary`/`text--primary`/`text--disabled` inside dialog content (black-on-dark under voila)
 
 Read `docs/guides/migration-notes-v3.4.md` for the
 full breaking changes list.

@@ -9,7 +9,7 @@ These defaults were recovered from the saved pysepal design session and should b
 - New apps never scaffold traitlets observer flows as the primary pattern.
 - Always include `component/message/` and the Translator pattern.
 - Use live pysepal source discovery instead of a baked-in component list.
-- Use `pyproject.toml` as the single source of truth for Python dependencies.
+- `sepal_environment.yml` is the deploy authority for dependencies; `pyproject.toml` mirrors it for dev tooling (see Dependency Defaults below).
 - Do not create `requirements.txt`.
 - Create `sepal_environment.yml`.
 - Skip `noxfile.py` by default.
@@ -88,15 +88,21 @@ Local apps still use:
 
 ## Dependency Defaults
 
-`pyproject.toml` owns Python dependencies.
+`sepal_environment.yml` is the deploy authority — it is what SEPAL installs
+when building the module env. `pyproject.toml` mirrors its Python deps for dev
+tooling (and holds tool config), but the conda YAML wins on any drift.
 
-`sepal_environment.yml` owns conda-level or compiled dependencies and installs the local project with:
+Do **not** install the local project from the YAML (no `-e .`): the app runs
+in place under voila, and pyproject pins pulled in by an editable install can
+poison the conda geospatial stack (see `references/sepal-deployment.md`).
+Pin every pip dep in the YAML exactly:
 
 ```yaml
 dependencies:
   - pip
   - pip:
-      - -e .
+      - somedep==1.2.3
+      # no -e .
 ```
 
 ## Repo-Local Draft Target
