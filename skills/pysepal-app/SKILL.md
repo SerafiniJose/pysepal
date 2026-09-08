@@ -59,6 +59,22 @@ or similar filesystem APIs. Those APIs target the container filesystem, not the
 authenticated user's SEPAL files. Container-local access is only acceptable for
 read-only packaged assets, templates, and application source files.
 
+For local/Voila apps (the app runs on the user's SEPAL instance and writes to
+the local filesystem), all user outputs MUST live under the SEPAL-wide results
+root `~/module_results/<module_name>/`. Define it once in
+`component/parameter/directory.py` (the templates already ship this) and route
+every output path through that constant:
+
+```python
+module_dir = Path.home() / "module_results" / "<module_name>"
+module_dir.mkdir(parents=True, exist_ok=True)
+```
+
+Never default to a repo-relative folder such as `data/` or `results/` — on a
+SEPAL deployment that writes inside the app checkout, invisible to the user's
+file browser and to other modules. An env-var override (e.g.
+`<APP>_DATA_DIR`) on top of this default is fine for dev and tests.
+
 ## Notification Rules
 
 When a new pysepal Solara app has async work or user-visible state transitions:

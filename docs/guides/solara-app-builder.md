@@ -272,6 +272,14 @@ my_module/
 └── assets/                    # Static files (CSS, images)
 ```
 
+### Output directory convention
+
+All SEPAL modules write user outputs under `~/module_results/<module_name>/`.
+`component/parameter/directory.py` defines this root once; nothing else in the
+app hardcodes paths. GEE/container apps get the same location remotely via
+`sepal_client.results_path`. Never write outputs to a folder inside the app
+checkout — it is invisible to the user's SEPAL file browser.
+
 ## 4. State Management
 
 ### Option A: AppState singleton with `solara.reactive()` (required for new apps)
