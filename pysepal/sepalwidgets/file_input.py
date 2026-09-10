@@ -143,6 +143,13 @@ class FileInput(v.VuetifyTemplate, SepalWidget):
         log.debug(f"Initial folder: {self.initial_folder}")
         self.current_folder = self.initial_folder
         self.root = root if root else "" if sepal_client else str(Path.home())
+        # The SEPAL user-files API lists paths relative to the sandbox home
+        # (``downloads/x.tif``). The frontend prefixes ``base_path`` to the
+        # selected entry, so seed it with the home directory: consumers then get
+        # the same absolute value the local picker yields instead of a relative
+        # path that resolves against the CWD (the read-only app mount on SEPAL).
+        if sepal_client and not self.base_path:
+            self.base_path = str(Path.home())
 
         log.debug(f"Root folder: {self.root}")
 
