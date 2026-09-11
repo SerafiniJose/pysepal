@@ -4,7 +4,6 @@ Provides AssetSelectComponent for selecting Earth Engine assets
 with optional column/value filtering (TABLE assets only).
 """
 
-import asyncio
 from typing import Callable, Dict, List, Optional, Union
 
 import ee
@@ -107,8 +106,8 @@ def AssetSelectComponent(
     async def load_assets():
         loading_assets.set(True)
         try:
-            folder_path = folder or await asyncio.to_thread(gee_interface.get_folder)
-            raw_assets = await asyncio.to_thread(gee_interface.get_assets, folder_path)
+            folder_path = folder or await gee_interface.get_folder_async()
+            raw_assets = await gee_interface.get_assets_async(folder_path)
 
             assets = {k: sorted([e["id"] for e in raw_assets if e["type"] == k]) for k in types}
 
@@ -138,13 +137,7 @@ def AssetSelectComponent(
         finally:
             loading_assets.set(False)
 
-    # GEE traffic goes through the *blocking* GEEInterface API from a worker
-    # thread: eeclient's cached httpx client binds to the first event loop that
-    # drives it, and GEEInterface runs everything on its own private loop.
-    # Awaiting the ``*_async`` variants here (kernel loop or a use_task thread
-    # loop) makes the next call from either side fail with "bound to a
-    # different event loop" / "Non-thread-safe operation invoked on an event
-    # loop other than the current one". Same rule as aoi.admin.process_admin.
+    # Keep session-backed GEE coroutines on Solara's current event loop.
     solara.lab.use_task(
         load_assets,
         dependencies=[],
@@ -167,7 +160,7 @@ def AssetSelectComponent(
 
         loading_columns.set(True)
         try:
-            asset_info = await asyncio.to_thread(gee_interface.get_asset, aid.strip())
+            asset_info = await gee_interface.get_asset_async(aid.strip())
 
             if asset_info["type"] not in types:
                 validation_msg.set(
@@ -179,9 +172,7 @@ def AssetSelectComponent(
             asset_type.set(asset_info["type"])
 
             if asset_info["type"] == "TABLE":
-                info = await asyncio.to_thread(
-                    gee_interface.get_info, ee.FeatureCollection(aid).first()
-                )
+                info = await gee_interface.get_info_async(ee.FeatureCollection(aid).first())
                 cols = sorted(
                     [str(col) for col in info["properties"] if col not in _EXCLUDED_PROPERTIES]
                 )
@@ -232,9 +223,7 @@ def AssetSelectComponent(
         loading_values.set(True)
         try:
             fc = ee.FeatureCollection(aid)
-            vals = await asyncio.to_thread(
-                gee_interface.get_info, fc.distinct(col).aggregate_array(col)
-            )
+            vals = await gee_interface.get_info_async(fc.distinct(col).aggregate_array(col))
             value_items.set(sorted(set(vals)))
         except Exception as e:
             notifications.error(f"Error loading column values: {e}")
