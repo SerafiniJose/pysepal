@@ -71,6 +71,7 @@ class TrackedTask:
     status: TaskStatus = TaskStatus.PENDING
     milestones: tuple[TaskMilestone, ...] = ()
     progress: Optional[float] = None
+    progress_detail: Optional[str] = None
     total_steps: Optional[int] = None
     current_step: int = 0
     created_at: float = field(default_factory=time.time)
