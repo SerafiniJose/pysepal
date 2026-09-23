@@ -127,12 +127,22 @@ export default {
       return t && t.progress != null ? t.progress : null;
     },
     pillHasDetail() {
+      // A detail is shown whenever it is set, including on an
+      // indeterminate task (no numeric progress yet — e.g. a wait reason).
       const t = this.displayTask;
-      return !!(t && t.progressDetail && t.progress != null);
+      return !!(t && t.progressDetail);
     },
     pillPct() {
-      // Leading percentage, shown only on the progress-detail frame.
-      if (!this.pillFrameB || !this.pillHasDetail) return null;
+      // Leading percentage, shown only on the progress-detail frame, and
+      // only once progress is known — an indeterminate task's detail
+      // stands alone, with no bogus percentage in front of it.
+      if (
+        !this.pillFrameB ||
+        !this.pillHasDetail ||
+        this.pillProgress == null
+      ) {
+        return null;
+      }
       return Math.round(this.pillProgress * 100) + "%";
     },
     pillText() {

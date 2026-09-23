@@ -42,16 +42,26 @@ class TaskTracker:
         )
 
     def set_progress(self, value: Optional[float], detail: Optional[str] = None) -> None:
-        """Update continuous progress (0.0-1.0). Does NOT create a milestone.
+        """Update continuous progress. Does NOT create a milestone.
 
-        ``value=None`` resets the task to indeterminate — per-item runs use it
-        between items so a finished item's 100% ring doesn't linger.
+        Unlike :meth:`step`, this never lands in the milestone log, so it
+        won't flood it with per-item updates. It still replaces the whole
+        task list and pushes it to the browser on every call, so callers
+        should throttle high-frequency sources (for example, only on a
+        whole-percent change) rather than calling it for every item.
 
-        ``detail`` is a short display string for the current progress (e.g.
-        ``"rivers — tile 10/30"``) shown by the pill alongside the percentage.
-        It is display-only state: unlike :meth:`step` it never lands in the
-        milestone log, so high-frequency updates stay cheap. Omitting it
-        clears any previous detail so a stale string can't outlive its value.
+        Args:
+            value: Progress fraction from 0.0 to 1.0, or ``None`` to reset
+                the task to indeterminate. Per-item runs use ``None``
+                between items so a finished item's 100% ring doesn't
+                linger before the next one starts from 0.
+            detail: A short display string for the current progress (e.g.
+                ``"Downloading — tile 10/30"``), shown by the pill
+                alongside the percentage. It is display-only and never
+                lands in the milestone log. It is shown even while
+                ``value`` is ``None`` (e.g. a wait reason on an
+                indeterminate task). Omitting it clears any previous
+                detail so a stale string can't outlive its value.
         """
         if self._finished:
             return

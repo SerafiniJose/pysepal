@@ -29,6 +29,17 @@ def _numeric_property(rule_body: str, name: str) -> int:
     return int(match.group(1))
 
 
+def _computed_body(name: str, content: str) -> str:
+    """Extract the body of a `computed: { ... }` property by name."""
+    match = re.search(
+        rf"{re.escape(name)}\(\)\s*\{{(?P<body>.*?)\n\s{{4}}\}},",
+        content,
+        re.DOTALL,
+    )
+    assert match, f"Missing computed property {name}"
+    return match.group("body")
+
+
 _DIALOG_Z_INDEX = 202  # Vuetify 2 v-dialog__content default
 _OVERLAY_Z_INDEX = 201  # Vuetify 2 v-overlay default
 
@@ -88,8 +99,8 @@ def test_pill_and_logger_font_sizes_are_px_for_cross_runtime_parity():
 def test_pill_ring_is_determinate_when_progress_known():
     """The pill spinner binds to task progress instead of spinning forever.
 
-    Tasks that publish ``progress`` (layer downloads) get a determinate ring;
-    tasks that never do (training, evaluation) keep the indeterminate spinner
+    Tasks that publish ``progress`` (a download) get a determinate ring;
+    tasks that never do (a validation pass) keep the indeterminate spinner
     via the ``:indeterminate`` binding — the bare hardcoded attribute must go.
     """
     content = _TEMPLATE_PATH.read_text()
@@ -102,16 +113,50 @@ def test_pill_ring_is_determinate_when_progress_known():
     ), "hardcoded indeterminate spinner still present"
 
 
-def test_pill_text_alternates_with_progress_detail():
-    """The pill alternates between run position (title) and layer progress.
+def test_pill_percentage_requires_known_progress():
+    """The leading percentage only appears once progress is known.
 
-    ``progressDetail`` carries the per-layer tile string; a frame timer swaps
-    ``pillText`` between the title and ``{pct}% {detail}``. Tasks without a
-    detail never alternate.
+    A task can carry a ``detail`` while still indeterminate (no numeric
+    ``value`` yet, e.g. a wait reason) — the pill must show that detail
+    without a bogus percentage in front of it.
+    """
+    content = _TEMPLATE_PATH.read_text()
+    pct_body = _computed_body("pillPct", content)
+    assert re.search(
+        r"pillProgress\s*==\s*null", pct_body
+    ), "pillPct must return null while progress is unknown"
+
+
+def test_pill_text_alternates_with_progress_detail():
+    """The pill alternates between the task title and its progress detail.
+
+    ``progressDetail`` carries the current item's own progress string; a
+    frame timer swaps ``pillText`` between the title and the detail. A
+    detail is shown whenever it is set, even on an indeterminate task
+    (``progress == null``, e.g. a wait reason) — only the leading
+    percentage needs a known ``progress`` value (see the test above).
+    Tasks without a detail never alternate.
     """
     content = _TEMPLATE_PATH.read_text()
     assert "progressDetail" in content, "progressDetail prop not consumed"
     assert re.search(r"pillFrameB|frameB", content), "no alternation frame state in template"
+    assert re.search(
+        r"this\._pillFrameTimer\s*=\s*setInterval\(.*?,\s*2500\);", content, re.DOTALL
+    ), "alternation timer must fire every 2500ms"
+    assert (
+        "clearInterval(this._pillFrameTimer)" in content
+    ), "frame timer must be cleared on destroy"
+    assert (
+        "this.pillFrameB ? t.progressDetail : t.title" in content
+    ), "frame B must show the detail, frame A the title"
+
+    detail_body = _computed_body("pillHasDetail", content)
+    detail_code = re.sub(r"//[^\n]*", "", detail_body)  # drop line comments
+    assert "progressDetail" in detail_code, "detail visibility must check progressDetail"
+    assert "t.progress" not in detail_code.replace("t.progressDetail", ""), (
+        "a detail must be shown whenever it is set, even on an indeterminate "
+        "(progress == null) task — the code must not also gate on t.progress"
+    )
 
 
 def test_theme_is_driven_by_prop_not_dom_scan():
