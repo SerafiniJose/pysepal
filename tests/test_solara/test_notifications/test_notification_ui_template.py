@@ -111,9 +111,7 @@ def test_pill_text_alternates_with_progress_detail():
     """
     content = _TEMPLATE_PATH.read_text()
     assert "progressDetail" in content, "progressDetail prop not consumed"
-    assert re.search(
-        r"pillFrameB|frameB", content
-    ), "no alternation frame state in template"
+    assert re.search(r"pillFrameB|frameB", content), "no alternation frame state in template"
 
 
 def test_theme_is_driven_by_prop_not_dom_scan():
