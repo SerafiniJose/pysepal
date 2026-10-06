@@ -136,13 +136,18 @@ def test_a_per_connection_runtime_refuses_process_asset():
     assert stubs.init_ee.call_count == 0
 
 
-def test_a_per_connection_runtime_refuses_the_aoi_view_on_mount():
+def test_a_per_connection_runtime_refuses_the_aoi_view_on_mount(kernel_contexts):
     """The mount effect ran before any method was picked -- the earliest door.
 
     The view has no interface to be handed, so it resolves the connection's own
     and inherits that refusal, which names the fix an app author needs.
+
+    The refused render never returns its render context, so nothing can close
+    it: rendering in a kernel context of its own keeps it off the process-wide
+    locale, where a later ``set_locale`` would re-run the mount effect outside
+    the stubbed topology and reach for real Earth Engine credentials.
     """
-    with _topology(PER_CONNECTION) as stubs:
+    with _topology(PER_CONNECTION) as stubs, kernel_contexts():
         with pytest.raises(SepalSessionError, match="with_sepal_sessions"):
             _render(AoiView(gee=True))
 
