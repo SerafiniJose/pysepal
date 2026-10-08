@@ -5,6 +5,8 @@ theme store -- can only be tested against real contexts: a fake scope id
 proves nothing about storage solara keys by its own kernel context.
 """
 
+from collections import UserDict
+
 import pytest
 
 
@@ -16,24 +18,25 @@ def kernel_contexts(monkeypatch, tmp_path):
     from uuid import uuid4
 
     monkeypatch.setenv("IPYTHONDIR", str(tmp_path / "ipython"))
-    from ipywidgets import Widget
     from solara.server.kernel import Kernel
-    from solara.server.kernel_context import VirtualKernelContext, get_current_context
+    from solara.server.kernel_context import VirtualKernelContext
 
     monkeypatch.setattr(sys, "argv", ["solara"])
 
-    # Without a Solara server nothing scopes ipywidgets' registry per kernel, so
-    # the Widget.close_all() in a context's close() would also close widgets
-    # whose comm belongs to another kernel: unregistering those raises KeyError,
-    # which solara >= 1.64 no longer swallows. close() runs inside its context,
-    # so close only the widgets of that kernel.
-    def close_own_widgets():
-        own = get_current_context().kernel.comm_manager.comms
-        for widget in list(Widget.widgets.values()):
-            if widget.comm is not None and widget.comm.comm_id in own:
-                widget.close()
+    # A Solara server keys ipywidgets' registry by kernel (solara.server.patch);
+    # without that, a context's close() closes every kernel's widgets.
+    import ipywidgets.widgets.widget as widget_module
+    from solara.server.kernel_context import get_current_context, has_current_context
 
-    monkeypatch.setattr(Widget, "close_all", staticmethod(close_own_widgets))
+    class PerKernelWidgets(UserDict):
+        def __init__(self, unscoped):
+            self.unscoped = unscoped
+
+        @property
+        def data(self):
+            return get_current_context().widgets if has_current_context() else self.unscoped
+
+    monkeypatch.setattr(widget_module, "_instances", PerKernelWidgets(widget_module._instances))
     contexts = []
     event_loop = asyncio.new_event_loop()
 
