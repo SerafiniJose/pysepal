@@ -6,6 +6,7 @@ import ee
 import pytest
 
 from pysepal import aoi
+from pysepal.aoi.aoi_view import MethodSelect
 from pysepal.mapping import SepalMap
 from pysepal.message import msg
 
@@ -243,12 +244,5 @@ def test_building_a_view_does_not_strip_the_shared_method_list() -> None:
 
     assert aoi.AoiModel.METHODS == before
 
-
-@pytest.mark.gee
-@pytest.mark.skipif(not ee.data.is_initialized(), reason="GEE is not set")
-def test_a_gee_view_built_after_a_local_one_still_offers_an_asset() -> None:
-    """The GEE half of the check above: it needs a live Earth Engine session."""
-    aoi.AoiView("ALL", gee=False)
-
-    later = aoi.AoiView("ALL", gee=True)
-    assert "ASSET" in [item["value"] for item in later.w_method.items if "value" in item]
+    later = MethodSelect("ALL", gee=True)
+    assert "ASSET" in [item["value"] for item in later.items if "value" in item]

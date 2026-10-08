@@ -18,6 +18,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import ipywidgets
 import pytest
 import reacton
 
@@ -86,9 +87,16 @@ def _render(component):
     """Render a component to completion and return its root widget."""
 
     async def _runner():
-        root, rc = reacton.render(component, handle_error=False)
-        rc.close()
-        return root
+        # reacton.render returns no context when the render raises, so build it
+        # here: a refused render left open stays subscribed to reactives (the
+        # locale) and re-runs its effects in later tests, outside these stubs.
+        container = ipywidgets.VBox()
+        rc = reacton.core._RenderContext(component, container, handle_error=False)
+        try:
+            rc.render(component, container)
+        finally:
+            rc.close()
+        return container
 
     return asyncio.run(_runner())
 
@@ -136,18 +144,13 @@ def test_a_per_connection_runtime_refuses_process_asset():
     assert stubs.init_ee.call_count == 0
 
 
-def test_a_per_connection_runtime_refuses_the_aoi_view_on_mount(kernel_contexts):
+def test_a_per_connection_runtime_refuses_the_aoi_view_on_mount():
     """The mount effect ran before any method was picked -- the earliest door.
 
     The view has no interface to be handed, so it resolves the connection's own
     and inherits that refusal, which names the fix an app author needs.
-
-    The refused render never returns its render context, so nothing can close
-    it: rendering in a kernel context of its own keeps it off the process-wide
-    locale, where a later ``set_locale`` would re-run the mount effect outside
-    the stubbed topology and reach for real Earth Engine credentials.
     """
-    with _topology(PER_CONNECTION) as stubs, kernel_contexts():
+    with _topology(PER_CONNECTION) as stubs:
         with pytest.raises(SepalSessionError, match="with_sepal_sessions"):
             _render(AoiView(gee=True))
 
